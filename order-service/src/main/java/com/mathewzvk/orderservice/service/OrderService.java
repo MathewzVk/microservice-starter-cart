@@ -32,40 +32,46 @@ public class OrderService {
 
     private final ApplicationEventPublisher applicationEventPublisher;
 
-    public String placeOrder(OrderRequest orderRequest){
+    public String placeOrder(OrderRequest orderRequest) {
         Order order = new Order();
         order.setOrderNumber(UUID.randomUUID().toString());
+
         List<OrderLineItems> orderLineItems = orderRequest.getOrderLineItemsDtoList()
-                .stream().map(this::mapToOrderLineItems).toList();
+                .stream()
+                .map(this::mapToOrderLineItems)
+                .toList();
 
         order.setOrderLineItems(orderLineItems);
-        List<String> skuCodes = order.getOrderLineItems().stream()
-                        .map(OrderLineItems::getSkuCode)
-                                .toList();
 
-        Observation inventoryServiceObservation = Observation.createNotStarted("inventory-service-lookup", this.observationRegistry);
+        List<String> skuCodes = order.getOrderLineItems().stream()
+                .map(OrderLineItems::getSkuCode)
+                .toList();
+
+        // Call Inventory Service, and place order if product is in
+        // stock
+        Observation inventoryServiceObservation = Observation.createNotStarted("inventory-service-lookup",
+                this.observationRegistry);
         inventoryServiceObservation.lowCardinalityKeyValue("call", "inventory-service");
         return inventoryServiceObservation.observe(() -> {
-
-            InventoryResponse[] inventoryResponsesArray = webClientBuilder.build().get()
+            InventoryResponse[] inventoryResponseArray = webClientBuilder.build().get()
                     .uri("http://inventory-service/api/inventory",
                             uriBuilder -> uriBuilder.queryParam("skuCode", skuCodes).build())
                     .retrieve()
                     .bodyToMono(InventoryResponse[].class)
                     .block();
 
-            assert inventoryResponsesArray != null;
-            boolean allItemIsInStock = Arrays.stream(inventoryResponsesArray).allMatch(InventoryResponse::isInStock);
+            boolean allProductsInStock = Arrays.stream(inventoryResponseArray)
+                    .allMatch(InventoryResponse::isInStock);
 
-            if(allItemIsInStock){
+            if (allProductsInStock) {
                 orderRepository.save(order);
+                // publish Order Placed Event
                 applicationEventPublisher.publishEvent(new OrderPlacedEvent(this, order.getOrderNumber()));
-                return "Order placed Successfully!!";
-            }else {
-                throw new IllegalArgumentException("Product is not in the Stock, please try again later!!");
+                return "Order Placed";
+            } else {
+                throw new IllegalArgumentException("Product is not in stock, please try again later");
             }
-                }
-        );
+        });
 
     }
 
